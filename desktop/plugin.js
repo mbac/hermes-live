@@ -4697,6 +4697,7 @@ function codexGreeting(greeting) {
 }
 var appendBytes = 500;
 function appendChunks(text2, limit = appendBytes) {
+  if (!Number.isInteger(limit) || limit < 4) throw new RangeError("appendChunks limit must be an integer of at least 4 bytes (one UTF-8 code point)");
   const out = [];
   let part = "";
   let size = 0;
