@@ -4695,8 +4695,27 @@ function codexContexts() {
 function codexGreeting(greeting) {
   return { type: "session.context.append", content: [{ type: "input_text", text: `The caller has just greeted you using the wake phrase ${JSON.stringify(greeting.phrase)}. Your bot name is ${JSON.stringify(greeting.name)}. Respond now with one brief, friendly Korean greeting that identifies you by name, then wait for the caller. This is a greeting only: do not delegate or use tools. Do not quote, summarize, or continue earlier conversation; after this one sentence, stop and listen.` }] };
 }
+var appendBytes = 500;
+function appendChunks(text2, limit = appendBytes) {
+  const out = [];
+  let part = "";
+  let size = 0;
+  for (const char of text2) {
+    const code = char.codePointAt(0);
+    const bytes = code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4;
+    if (part && size + bytes > limit) {
+      out.push(part);
+      part = "";
+      size = 0;
+    }
+    part += char;
+    size += bytes;
+  }
+  if (part || !out.length) out.push(part);
+  return out;
+}
 function codexToolResult(id, result) {
-  return { type: "delegation.context.append", delegation_item_id: id, content: [{ type: "input_text", text: result }] };
+  return appendChunks(result).map((text2) => ({ type: "delegation.context.append", delegation_item_id: id, content: [{ type: "input_text", text: text2 }] }));
 }
 var CodexMedia = class {
   stream = null;
@@ -4899,7 +4918,7 @@ var CodexRTC = class {
   }
   // Original media tracks, not audio append events.
   toolResult(id, result) {
-    if (!this.closed && this.channel?.readyState === "open") this.channel.send(JSON.stringify(codexToolResult(id, result)));
+    if (!this.closed && this.channel?.readyState === "open") for (const event of codexToolResult(id, result)) this.channel.send(JSON.stringify(event));
   }
   fail(message) {
     if (this.closed) return;

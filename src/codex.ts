@@ -32,7 +32,28 @@ export function codexGreeting(greeting:NonNullable<Connection['wakeGreeting']>){
  return {type:'session.context.append',content:[{type:'input_text',text:`The caller has just greeted you using the wake phrase ${JSON.stringify(greeting.phrase)}. Your bot name is ${JSON.stringify(greeting.name)}. Respond now with one brief, friendly Korean greeting that identifies you by name, then wait for the caller. This is a greeting only: do not delegate or use tools. Do not quote, summarize, or continue earlier conversation; after this one sentence, stop and listen.`}]};
 }
 
-export function codexToolResult(id:string,result:string){return {type:'delegation.context.append',delegation_item_id:id,content:[{type:'input_text',text:result}]}}
+// The realtime server rejects any session.context.append or
+// delegation.context.append whose text exceeds 500 tokens ("Context append
+// text must not exceed 500 tokens."). Over WebRTC these events go straight from
+// this client to the server, so the Codex app-server cannot split them. Split
+// Hermes results here the way Codex does on its own transport
+// (CONTEXT_APPEND_MAX_BYTES in codex-rs methods_frameless_bidi.rs): at most 500
+// UTF-8 bytes per append, on code-point boundaries. A byte budget, unlike a
+// character count, also holds for dense scripts: 1000 Chinese characters (677
+// tokens) are rejected. The fixed setup append and the short wake-greeting
+// template above stay under the cap and are sent whole.
+const appendBytes=500;
+export function appendChunks(text:string,limit=appendBytes):string[]{
+ const out:string[]=[];let part='';let size=0;
+ for(const char of text){
+  const code=char.codePointAt(0)!;const bytes=code<0x80?1:code<0x800?2:code<0x10000?3:4;
+  if(part&&size+bytes>limit){out.push(part);part='';size=0}
+  part+=char;size+=bytes;
+ }
+ if(part||!out.length)out.push(part);
+ return out;
+}
+export function codexToolResult(id:string,result:string){return appendChunks(result).map(text=>({type:'delegation.context.append',delegation_item_id:id,content:[{type:'input_text',text}]}))}
 
 // WebRTC sends the original mic track and plays a remote media track. No PCM
 // re-encoding, permanent credential, or subscription token reaches this class.
@@ -116,7 +137,7 @@ export class CodexRTC implements Transport {
   }catch(error){this.close();throw error}
  }
  audio(){} // Original media tracks, not audio append events.
- toolResult(id:string,result:string){if(!this.closed&&this.channel?.readyState==='open')this.channel.send(JSON.stringify(codexToolResult(id,result)))}
+ toolResult(id:string,result:string){if(!this.closed&&this.channel?.readyState==='open')for(const event of codexToolResult(id,result))this.channel.send(JSON.stringify(event))}
  private fail(message:string){if(this.closed)return;this.emit({type:'error',message});this.close()}
  close(){if(this.closed)return;this.closed=true;clearInterval(this.heartbeat);clearInterval(this.monitor);clearTimeout(this.readyTimer);this.rejectReady?.(new Error("HL_ERROR:errCancelled"));this.rejectReady=null;if(this.channel){this.channel.onmessage=null;this.channel.onclose=null;this.channel.close()}if(this.pc){this.pc.ontrack=null;this.pc.onconnectionstatechange=null;this.pc.close()}void this.request('/codex/stop',{callId:this.callId},8000).catch(()=>{})}
 }
